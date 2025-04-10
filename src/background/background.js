@@ -1,4 +1,4 @@
-// Debugging flag - set to true to enable verbose logging
+// filepath: /ytm-discord-extension/ytm-discord-extension/src/background/background.js
 const DEBUG = true;
 
 function debugLog(...args) {

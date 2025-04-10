@@ -1,0 +1,25 @@
+{
+  "name": "ytm-discord-extension",
+  "version": "1.0.0",
+  "description": "A browser extension that monitors the status of YouTube Music and displays that status on Discord.",
+  "main": "src/background/background.js",
+  "scripts": {
+    "build": "echo 'Build script not defined'",
+    "test": "echo 'Test script not defined'",
+    "start": "echo 'Start script not defined'"
+  },
+  "keywords": [
+    "youtube",
+    "music",
+    "discord",
+    "extension"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "discord.js": "^14.0.0"
+  },
+  "devDependencies": {
+    "eslint": "^8.0.0"
+  }
+}
