@@ -3,7 +3,7 @@
     "name": "YouTube Music Discord Presence",
     "version": "1.0",
     "description": "Share your YouTube Music activity on Discord",
-    "permissions": ["tabs", "scripting", "nativeMessaging"],
+    "permissions": ["contextMenus"],
     "host_permissions": ["*://music.youtube.com/*"],
     "background": {
       "service_worker": "background.js"
