@@ -2,157 +2,308 @@
 let lastSongData = null;
 let checkInterval = null;
 
+// Debugging flag - set to true to enable verbose logging
+const DEBUG = true;
+
+function debugLog(...args) {
+  if (DEBUG) {
+    console.log("[YTMusic Discord]", ...args);
+  }
+}
+
+// Wait for an element to be available in the DOM
+function waitForElement(selector, timeout = 10000) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(selector)) {
+      return resolve(document.querySelector(selector));
+    }
+    
+    const observer = new MutationObserver(() => {
+      if (document.querySelector(selector)) {
+        observer.disconnect();
+        resolve(document.querySelector(selector));
+      }
+    });
+    
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+    
+    setTimeout(() => {
+      observer.disconnect();
+      reject(new Error(`Timeout waiting for ${selector}`));
+    }, timeout);
+  });
+}
+
 // Extract song information from YouTube Music page
 function getCurrentSongData() {
+  // Initialize with default "not playing" state
+  const data = {
+    isPlaying: false,
+    title: '',
+    artist: '',
+    albumUrl: '',
+    timestamp: Date.now()
+  };
+  
   try {
-    // Get song title
-    const title = document.querySelector('.title.style-scope.ytmusic-player-bar');
+    // First, check if the player controls are visible at all
+    const playerBar = document.querySelector('ytmusic-player-bar');
+    if (!playerBar || window.getComputedStyle(playerBar).display === 'none') {
+      debugLog("Player bar not visible or not found");
+      return null;
+    }
     
-    // Get artist name
-    const artistContainer = document.querySelector('.subtitle.style-scope.ytmusic-player-bar');
-    let artistText = '';
-    if (artistContainer) {
-      // Try different ways to get the artist
-      const artistLink = artistContainer.querySelector('yt-formatted-string a');
-      if (artistLink) {
-        artistText = artistLink.textContent;
-      } else {
-        // Fallback to the entire subtitle text
-        artistText = artistContainer.textContent || 'Unknown Artist';
+    // Try multiple selectors for song title
+    const titleSelectors = [
+      '.title.style-scope.ytmusic-player-bar',
+      'ytmusic-player-bar .title',
+      'ytmusic-player-bar .content-info-wrapper .title'
+    ];
+    
+    let titleElement = null;
+    for (const selector of titleSelectors) {
+      titleElement = document.querySelector(selector);
+      if (titleElement && titleElement.textContent.trim()) {
+        data.title = titleElement.textContent.trim();
+        break;
       }
     }
     
-    // Get album art
-    const albumArt = document.querySelector('.image.style-scope.ytmusic-player-bar');
-    let albumUrl = '';
-    if (albumArt) {
-      const img = albumArt.querySelector('img');
-      if (img && img.src) {
-        albumUrl = img.src;
+    // If we still don't have a title, the player is likely not active
+    if (!data.title) {
+      debugLog("No song title found, player might not be active");
+      return null;
+    }
+    
+    // Try multiple selectors for artist information
+    const artistSelectors = [
+      '.subtitle.style-scope.ytmusic-player-bar',
+      'ytmusic-player-bar .subtitle',
+      'ytmusic-player-bar .content-info-wrapper .subtitle'
+    ];
+    
+    let artistElement = null;
+    for (const selector of artistSelectors) {
+      artistElement = document.querySelector(selector);
+      if (artistElement && artistElement.textContent.trim()) {
+        // Try to get just the artist name, not the entire subtitle
+        const artistLink = artistElement.querySelector('a');
+        if (artistLink) {
+          data.artist = artistLink.textContent.trim();
+        } else {
+          // Fallback to full subtitle, cleaning up extra text as best we can
+          let fullText = artistElement.textContent.trim();
+          // Remove "• Album:" and similar text if present
+          fullText = fullText.split('•')[0].trim();
+          data.artist = fullText;
+        }
+        break;
       }
     }
     
-    // Get playing state - more defensively
-    let isPlaying = false;
-    try {
-      const playButton = document.querySelector('.play-pause-button.style-scope.ytmusic-player-bar');
+    // Get album art image
+    const imageSelectors = [
+      '.image.style-scope.ytmusic-player-bar img',
+      'ytmusic-player-bar .image img',
+      'img.ytmusic-player-bar'
+    ];
+    
+    for (const selector of imageSelectors) {
+      const imgElement = document.querySelector(selector);
+      if (imgElement && imgElement.src) {
+        data.albumUrl = imgElement.src;
+        break;
+      }
+    }
+    
+    // Determine if music is playing
+    // First look for the play/pause button and check its state
+    const playPauseSelectors = [
+      '.play-pause-button',
+      'tp-yt-paper-icon-button.play-pause-button',
+      'ytmusic-player-bar .play-pause-button'
+    ];
+    
+    let playButtonFound = false;
+    for (const selector of playPauseSelectors) {
+      const playButton = document.querySelector(selector);
       if (playButton) {
-        const ariaLabel = playButton.getAttribute('aria-label');
-        isPlaying = ariaLabel ? ariaLabel.includes('Pause') : false;
+        playButtonFound = true;
         
-        // Alternative detection if aria-label doesn't work
-        if (!ariaLabel) {
-          // Check if the play icon is hidden (meaning it's currently playing)
-          const playIcon = playButton.querySelector('path[d^="M8,5 L19"]');
-          const pauseIcon = playButton.querySelector('path[d^="M6,19h4V5H6v14z"]');
+        // Method 1: Check aria-label
+        const ariaLabel = playButton.getAttribute('aria-label') || '';
+        if (ariaLabel.includes('Pause')) {
+          data.isPlaying = true;
+          break;
+        }
+        
+        // Method 2: Check button state visually
+        try {
+          // Check which icon is visible - play or pause
+          const playIcon = playButton.querySelector('path[d^="M8"]');
+          const pauseIcon = playButton.querySelector('path[d^="M6,19h4"]');
           
-          if (playIcon && pauseIcon) {
-            isPlaying = window.getComputedStyle(pauseIcon.parentElement).display !== 'none';
+          if (pauseIcon && window.getComputedStyle(pauseIcon.parentElement).display !== 'none') {
+            data.isPlaying = true;
+            break;
           }
+        } catch (iconError) {
+          debugLog("Error checking play/pause icon:", iconError);
         }
       }
-    } catch (err) {
-      console.log('Error getting play state:', err);
-      // Default to not playing if we can't determine
-      isPlaying = false;
     }
     
-    // Get timestamps
-    const timeInfo = document.querySelector('.time-info.style-scope.ytmusic-player-bar');
-    let currentTime = '';
-    let totalTime = '';
-    if (timeInfo) {
-      const times = timeInfo.textContent.split(' / ');
-      if (times.length === 2) {
-        currentTime = times[0].trim();
-        totalTime = times[1].trim();
+    // If we couldn't find the play button, try an alternative method
+    if (!playButtonFound) {
+      // Alternative method: check if video is playing by looking for the video element
+      const videoElement = document.querySelector('video');
+      if (videoElement && !videoElement.paused && !videoElement.ended) {
+        data.isPlaying = true;
       }
     }
     
-    // Only return data if we have at least a title
-    if (title) {
-      return {
-        title: title.textContent || 'Unknown Title',
-        artist: artistText || 'Unknown Artist',
-        albumUrl,
-        isPlaying,
-        currentTime,
-        totalTime,
-        timestamp: Date.now()
-      };
-    }
+    debugLog("Current song data:", data);
+    return data;
+    
   } catch (e) {
     console.error('Error extracting YouTube Music data:', e);
-  }
-  
-  return null;
-}
-
-// Debugging helper function - log what's found on the page
-function debugPageElements() {
-  console.log('Debug: Looking for YouTube Music elements');
-  
-  const title = document.querySelector('.title.style-scope.ytmusic-player-bar');
-  console.log('Title element found:', !!title, title ? title.textContent : 'N/A');
-  
-  const artist = document.querySelector('.subtitle.style-scope.ytmusic-player-bar');
-  console.log('Artist element found:', !!artist, artist ? artist.textContent : 'N/A');
-  
-  const playButton = document.querySelector('.play-pause-button.style-scope.ytmusic-player-bar');
-  console.log('Play button found:', !!playButton);
-  
-  if (playButton) {
-    console.log('Play button aria-label:', playButton.getAttribute('aria-label'));
+    return null;
   }
 }
 
-// Start tracking YouTube Music playback
+// Continuously check the page for YouTube Music data
 function startTracking() {
+  debugLog("Starting YouTube Music tracking");
+  
   if (checkInterval) {
     clearInterval(checkInterval);
   }
   
-  // Log debug info once at startup
-  setTimeout(debugPageElements, 2000);
-  
   checkInterval = setInterval(() => {
     const songData = getCurrentSongData();
     
-    // Only send update if something has changed and we have data
-    if (songData && 
-        (!lastSongData || 
-         songData.title !== lastSongData.title || 
-         songData.artist !== lastSongData.artist || 
-         songData.isPlaying !== lastSongData.isPlaying)) {
+    if (!songData) {
+      // No valid song data, nothing to update
+      return;
+    }
+    
+    // Only send update if something has changed
+    if (!lastSongData || 
+        songData.title !== lastSongData.title || 
+        songData.artist !== lastSongData.artist || 
+        songData.isPlaying !== lastSongData.isPlaying) {
       
-      console.log('Song data changed, sending update:', songData);
+      debugLog("Song data changed, sending update:", songData);
       lastSongData = songData;
       
       // Send to background script
       chrome.runtime.sendMessage({
         type: 'SONG_UPDATE',
         data: songData
+      }).catch(error => {
+        // Handle errors in sending message (happens if background script isn't ready)
+        debugLog("Error sending message to background script:", error);
       });
     }
   }, 1000); // Check every second
 }
 
-// Listen for messages from background script
+// Debug function to show what elements are found on the page
+function debugPageElements() {
+  debugLog("=== YouTube Music Element Debug ===");
+  
+  // All potential selectors
+  const selectorGroups = {
+    "Player Bar": ['ytmusic-player-bar'],
+    "Title": [
+      '.title.style-scope.ytmusic-player-bar',
+      'ytmusic-player-bar .title',
+      'ytmusic-player-bar .content-info-wrapper .title'
+    ],
+    "Artist": [
+      '.subtitle.style-scope.ytmusic-player-bar',
+      'ytmusic-player-bar .subtitle',
+      'ytmusic-player-bar .content-info-wrapper .subtitle'
+    ],
+    "Play Button": [
+      '.play-pause-button',
+      'tp-yt-paper-icon-button.play-pause-button',
+      'ytmusic-player-bar .play-pause-button'
+    ],
+    "Album Art": [
+      '.image.style-scope.ytmusic-player-bar img',
+      'ytmusic-player-bar .image img',
+      'img.ytmusic-player-bar'
+    ]
+  };
+  
+  for (const [groupName, selectors] of Object.entries(selectorGroups)) {
+    debugLog(`${groupName}:`);
+    for (const selector of selectors) {
+      const element = document.querySelector(selector);
+      const found = !!element;
+      let details = 'Not found';
+      
+      if (found) {
+        if (selector.includes('img')) {
+          details = element.src || 'No src attribute';
+        } else {
+          details = element.textContent?.trim() || 'Empty text';
+          // Check if it has aria-label
+          const ariaLabel = element.getAttribute('aria-label');
+          if (ariaLabel) {
+            details += ` (aria-label: "${ariaLabel}")`;
+          }
+        }
+      }
+      
+      debugLog(`  ${selector}: ${found ? '✓' : '✗'} ${details}`);
+    }
+  }
+  
+  // Check for video element
+  const video = document.querySelector('video');
+  debugLog("Video element:", !!video, video ? `Playing: ${!video.paused}` : 'N/A');
+  
+  // Get current song data
+  const songData = getCurrentSongData();
+  debugLog("getCurrentSongData() result:", songData);
+}
+
+// Set up message handling with background script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  debugLog("Received message:", message);
+  
   if (message.type === 'GET_CURRENT_SONG') {
-    sendResponse(getCurrentSongData());
+    const data = getCurrentSongData();
+    debugLog("Sending song data:", data);
+    sendResponse(data);
   } else if (message.type === 'DEBUG_PAGE') {
     debugPageElements();
     sendResponse({status: 'Debug info logged to console'});
   }
+  
+  return true; // Keep channel open for async response
 });
 
-// The page might not be fully loaded yet, so wait a bit before starting
-console.log('YouTube Music Discord Presence extension loaded');
-setTimeout(startTracking, 1500);
+// Start tracking with a delay to ensure page is fully loaded
+debugLog("YouTube Music Discord Presence extension loaded");
+
+setTimeout(() => {
+  debugLog("Running initial debug");
+  debugPageElements();
+  
+  // Start the tracking after initial debug
+  setTimeout(startTracking, 500);
+}, 2000);
 
 // Handle cleanup when the page is unloaded
 window.addEventListener('beforeunload', () => {
+  debugLog("Page unloading, cleaning up");
+  
   if (checkInterval) {
     clearInterval(checkInterval);
   }
@@ -161,5 +312,7 @@ window.addEventListener('beforeunload', () => {
   chrome.runtime.sendMessage({
     type: 'SONG_UPDATE',
     data: { isPlaying: false }
+  }).catch(() => {
+    // Ignore errors on page unload
   });
 });
