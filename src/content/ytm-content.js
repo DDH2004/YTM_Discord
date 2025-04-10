@@ -1,47 +1,44 @@
+const { debugLog } = require('../utils/logger');
+
 // Content script that runs on YouTube Music
 
 function getCurrentSongData() {
   try {
-    // More robust selectors for YouTube Music
+    // Improved selectors for YouTube Music
     const songElement = document.querySelector('.title.style-scope.ytmusic-player-bar');
-    const artistElement = document.querySelector('.subtitle.style-scope.ytmusic-player-bar');
-    const albumArtElement = document.querySelector('img.style-scope.ytmusic-player-bar');
+    const artistElement = document.querySelector('.byline.style-scope.ytmusic-player-bar');
+    const albumArtElement = document.querySelector('.image.style-scope.ytmusic-player-bar');
     
-    // Add null checks before accessing properties
-    const songTitle = songElement ? songElement.textContent.trim() : null;
-    const artistText = artistElement ? artistElement.textContent.trim() : null;
-    const albumArt = albumArtElement && albumArtElement.src ? albumArtElement.src : null;
-    
-    // Extract artist name more carefully
-    let artist = null;
-    if (artistText) {
-      // Artist information might be combined with other text
-      // Just take the first part as the artist name
-      artist = artistText.split('•')[0].trim();
-    }
-    
-    if (!songTitle || !artist) {
+    // Check if elements exist before accessing properties
+    if (!songElement || !artistElement) {
+      debugLog('Song or artist element not found on the page');
       return null;
     }
     
+    const songTitle = songElement.textContent.trim();
+    const artistText = artistElement.textContent.trim();
+    
+    // Fix for the specific error - add null check before using includes
+    if (!artistText) {
+      debugLog('Artist text is null or empty');
+      return null;
+    }
+    
+    // Extract artist - this was likely line 52 with the error
+    const artist = artistText.split('•')[0].trim();
+    
+    // Get album art if available
+    const albumArt = albumArtElement && albumArtElement.src ? albumArtElement.src : null;
+    
     return { songTitle, artist, albumArt };
   } catch (error) {
-    console.error('Error extracting YouTube Music data:', error);
+    debugLog('Error extracting YouTube Music data:', error);
     return null;
   }
 }
 
-// Check for music changes periodically
+// Track previous song to avoid redundant updates
 let previousSong = '';
-setInterval(() => {
-  const musicInfo = getCurrentSongData();
-  
-  // Only update if song data exists and has changed
-  if (musicInfo && musicInfo.songTitle && musicInfo.songTitle !== previousSong) {
-    previousSong = musicInfo.songTitle;
-    sendToLocalApp(musicInfo);
-  }
-}, 5000); // Check every 5 seconds
 
 function sendToLocalApp(data) {
   fetch('http://localhost:3000/update-status', {
@@ -52,5 +49,19 @@ function sendToLocalApp(data) {
     body: JSON.stringify(data),
   })
   .then(response => response.json())
-  .catch(error => console.error('Error sending data to local app:', error));
+  .catch(error => debugLog('Error sending data to local app:', error));
 }
+
+// Check for music updates periodically
+setInterval(() => {
+  const musicInfo = getCurrentSongData();
+  
+  if (musicInfo && musicInfo.songTitle && musicInfo.songTitle !== previousSong) {
+    debugLog('New song detected:', musicInfo.songTitle, 'by', musicInfo.artist);
+    previousSong = musicInfo.songTitle;
+    sendToLocalApp(musicInfo);
+  }
+}, 3000);
+
+// Initial check when script loads
+setTimeout(getCurrentSongData, 1500);
