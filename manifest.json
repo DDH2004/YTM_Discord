@@ -2,12 +2,12 @@
   "manifest_version": 3,
   "name": "YouTube Music Discord Status",
   "version": "1.0",
-  "description": "Monitors the status of YouTube Music and displays it on Discord.",
+  "description": "Show your YouTube Music listening activity on Discord",
   "permissions": [
-    "contextMenus",
-    "tabs",
-    "activeTab",
-    "scripting"
+    "activeTab"
+  ],
+  "host_permissions": [
+    "*://music.youtube.com/*"
   ],
   "background": {
     "service_worker": "src/background/background.js"
@@ -15,7 +15,7 @@
   "content_scripts": [
     {
       "matches": ["*://music.youtube.com/*"],
-      "js": ["src/content/content.js"]
+      "js": ["src/content/ytm-content.js"]
     }
   ],
   "action": {
