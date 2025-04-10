@@ -11,32 +11,6 @@ function debugLog(...args) {
   }
 }
 
-// Wait for an element to be available in the DOM
-function waitForElement(selector, timeout = 10000) {
-  return new Promise((resolve, reject) => {
-    if (document.querySelector(selector)) {
-      return resolve(document.querySelector(selector));
-    }
-    
-    const observer = new MutationObserver(() => {
-      if (document.querySelector(selector)) {
-        observer.disconnect();
-        resolve(document.querySelector(selector));
-      }
-    });
-    
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true
-    });
-    
-    setTimeout(() => {
-      observer.disconnect();
-      reject(new Error(`Timeout waiting for ${selector}`));
-    }, timeout);
-  });
-}
-
 // Extract song information from YouTube Music page
 function getCurrentSongData() {
   // Initialize with default "not playing" state
@@ -45,6 +19,8 @@ function getCurrentSongData() {
     title: '',
     artist: '',
     albumUrl: '',
+    currentTime: '',
+    totalTime: '',
     timestamp: Date.now()
   };
   
@@ -119,48 +95,100 @@ function getCurrentSongData() {
       }
     }
     
-    // Determine if music is playing
-    // First look for the play/pause button and check its state
-    const playPauseSelectors = [
-      '.play-pause-button',
-      'tp-yt-paper-icon-button.play-pause-button',
-      'ytmusic-player-bar .play-pause-button'
-    ];
-    
-    let playButtonFound = false;
-    for (const selector of playPauseSelectors) {
-      const playButton = document.querySelector(selector);
-      if (playButton) {
-        playButtonFound = true;
-        
-        // Method 1: Check aria-label
-        const ariaLabel = playButton.getAttribute('aria-label') || '';
-        if (ariaLabel.includes('Pause')) {
-          data.isPlaying = true;
-          break;
-        }
-        
-        // Method 2: Check button state visually
-        try {
-          // Check which icon is visible - play or pause
-          const playIcon = playButton.querySelector('path[d^="M8"]');
-          const pauseIcon = playButton.querySelector('path[d^="M6,19h4"]');
-          
-          if (pauseIcon && window.getComputedStyle(pauseIcon.parentElement).display !== 'none') {
-            data.isPlaying = true;
-            break;
-          }
-        } catch (iconError) {
-          debugLog("Error checking play/pause icon:", iconError);
-        }
+    // Get timestamps
+    const timeInfo = document.querySelector('.time-info.style-scope.ytmusic-player-bar');
+    if (timeInfo && timeInfo.textContent) {
+      const times = timeInfo.textContent.split(' / ');
+      if (times.length === 2) {
+        data.currentTime = times[0].trim();
+        data.totalTime = times[1].trim();
       }
     }
     
-    // If we couldn't find the play button, try an alternative method
-    if (!playButtonFound) {
-      // Alternative method: check if video is playing by looking for the video element
+    // Determine if music is playing using multiple methods
+    // We'll try several approaches and use the first one that works
+    
+    // Method 1: Check if video element is playing
+    try {
       const videoElement = document.querySelector('video');
       if (videoElement && !videoElement.paused && !videoElement.ended) {
+        debugLog("Video element indicates music is playing");
+        data.isPlaying = true;
+      }
+    } catch (e) {
+      debugLog("Error checking video element:", e);
+    }
+    
+    // Method 2: Check play/pause button - MOST DEFENSIVE APPROACH
+    if (!data.isPlaying) {
+      try {
+        // This is where the error was happening - we'll be ultra defensive
+        const playPauseSelectors = [
+          '.play-pause-button',
+          'tp-yt-paper-icon-button.play-pause-button',
+          'ytmusic-player-bar .play-pause-button'
+        ];
+        
+        for (const selector of playPauseSelectors) {
+          const playButton = document.querySelector(selector);
+          if (!playButton) continue;
+          
+          // Check aria-label very carefully
+          try {
+            const ariaLabel = playButton.getAttribute('aria-label');
+            // Only check includes if ariaLabel is a non-null string
+            if (typeof ariaLabel === 'string' && ariaLabel) {
+              if (ariaLabel.includes('Pause')) {
+                debugLog("Aria-label indicates music is playing:", ariaLabel);
+                data.isPlaying = true;
+                break;
+              }
+            }
+          } catch (ariaError) {
+            debugLog("Error checking aria-label:", ariaError);
+          }
+          
+          // Try checking the icon state
+          try {
+            const pauseIcon = playButton.querySelector('path[d^="M6,19h4"]') || 
+                              playButton.querySelector('[d*="h4V5H6v14zm8-14v14h4V5h-4z"]');
+            
+            if (pauseIcon) {
+              const iconStyle = window.getComputedStyle(pauseIcon.parentElement || pauseIcon);
+              if (iconStyle.display !== 'none') {
+                debugLog("Pause icon visible, music is playing");
+                data.isPlaying = true;
+                break;
+              }
+            }
+          } catch (iconError) {
+            debugLog("Error checking play/pause icon:", iconError);
+          }
+        }
+      } catch (buttonError) {
+        debugLog("Error checking play button:", buttonError);
+      }
+    }
+    
+    // Method 3: Check player state class
+    if (!data.isPlaying) {
+      try {
+        // YouTube Music adds classes to elements when playing
+        const playerPlaying = document.querySelector('.playing');
+        if (playerPlaying) {
+          debugLog("Found .playing class, music is playing");
+          data.isPlaying = true;
+        }
+      } catch (e) {
+        debugLog("Error checking player state class:", e);
+      }
+    }
+    
+    // If all methods failed, use a heuristic - if we have song data, it's likely playing
+    if (!data.isPlaying && data.title && data.currentTime) {
+      // Check if current time is not "0:00" - indicating playback has started
+      if (data.currentTime !== "0:00") {
+        debugLog("Using time heuristic to determine playback state");
         data.isPlaying = true;
       }
     }
@@ -172,43 +200,6 @@ function getCurrentSongData() {
     console.error('Error extracting YouTube Music data:', e);
     return null;
   }
-}
-
-// Continuously check the page for YouTube Music data
-function startTracking() {
-  debugLog("Starting YouTube Music tracking");
-  
-  if (checkInterval) {
-    clearInterval(checkInterval);
-  }
-  
-  checkInterval = setInterval(() => {
-    const songData = getCurrentSongData();
-    
-    if (!songData) {
-      // No valid song data, nothing to update
-      return;
-    }
-    
-    // Only send update if something has changed
-    if (!lastSongData || 
-        songData.title !== lastSongData.title || 
-        songData.artist !== lastSongData.artist || 
-        songData.isPlaying !== lastSongData.isPlaying) {
-      
-      debugLog("Song data changed, sending update:", songData);
-      lastSongData = songData;
-      
-      // Send to background script
-      chrome.runtime.sendMessage({
-        type: 'SONG_UPDATE',
-        data: songData
-      }).catch(error => {
-        // Handle errors in sending message (happens if background script isn't ready)
-        debugLog("Error sending message to background script:", error);
-      });
-    }
-  }, 1000); // Check every second
 }
 
 // Debug function to show what elements are found on the page
@@ -237,6 +228,10 @@ function debugPageElements() {
       '.image.style-scope.ytmusic-player-bar img',
       'ytmusic-player-bar .image img',
       'img.ytmusic-player-bar'
+    ],
+    "Time Info": [
+      '.time-info',
+      'ytmusic-player-bar .time-info'
     ]
   };
   
@@ -268,9 +263,62 @@ function debugPageElements() {
   const video = document.querySelector('video');
   debugLog("Video element:", !!video, video ? `Playing: ${!video.paused}` : 'N/A');
   
+  // More detailed play button check
+  const playButton = document.querySelector('.play-pause-button');
+  if (playButton) {
+    debugLog("Play button details:");
+    debugLog("  - className:", playButton.className);
+    debugLog("  - id:", playButton.id);
+    debugLog("  - attributes:", Array.from(playButton.attributes).map(a => `${a.name}="${a.value}"`).join(', '));
+    
+    const svgPaths = playButton.querySelectorAll('path');
+    debugLog("  - SVG paths:", Array.from(svgPaths).map(p => p.getAttribute('d')));
+  }
+  
   // Get current song data
   const songData = getCurrentSongData();
   debugLog("getCurrentSongData() result:", songData);
+}
+
+// Continuously check the page for YouTube Music data
+function startTracking() {
+  debugLog("Starting YouTube Music tracking");
+  
+  if (checkInterval) {
+    clearInterval(checkInterval);
+  }
+  
+  checkInterval = setInterval(() => {
+    const songData = getCurrentSongData();
+    
+    if (!songData) {
+      // No valid song data, nothing to update
+      return;
+    }
+    
+    // Only send update if something has changed
+    if (!lastSongData || 
+        songData.title !== lastSongData.title || 
+        songData.artist !== lastSongData.artist || 
+        songData.isPlaying !== lastSongData.isPlaying) {
+      
+      debugLog("Song data changed, sending update:", songData);
+      lastSongData = songData;
+      
+      // Send to background script
+      try {
+        chrome.runtime.sendMessage({
+          type: 'SONG_UPDATE',
+          data: songData
+        }).catch(error => {
+          // Handle errors in sending message (happens if background script isn't ready)
+          debugLog("Error sending message to background script:", error);
+        });
+      } catch (e) {
+        debugLog("Error sending message:", e);
+      }
+    }
+  }, 1000); // Check every second
 }
 
 // Set up message handling with background script
@@ -309,10 +357,14 @@ window.addEventListener('beforeunload', () => {
   }
   
   // Tell background script music has stopped
-  chrome.runtime.sendMessage({
-    type: 'SONG_UPDATE',
-    data: { isPlaying: false }
-  }).catch(() => {
+  try {
+    chrome.runtime.sendMessage({
+      type: 'SONG_UPDATE',
+      data: { isPlaying: false }
+    }).catch(() => {
+      // Ignore errors on page unload
+    });
+  } catch (e) {
     // Ignore errors on page unload
-  });
+  }
 });
